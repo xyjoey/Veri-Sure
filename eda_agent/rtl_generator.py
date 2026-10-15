@@ -8,8 +8,8 @@ from agentscope.message import Msg
 from pydantic import BaseModel
 
 from .agents import SafeReActAgent, clear_memory_safely
-from .config import OpenAIConfig
-from .model import make_formatter, make_openai_model
+from .config import LLMConfig
+from .model import make_formatter, make_chat_model
 from .prompts import FAILED_TRIAL_PROMPT, RTL_4_SHOT_EXAMPLES, TAG_ORDER_PROMPT
 from .sim_reviewer import check_syntax
 from .utils import add_lineno, clip_text, extract_xml_tag, strip_markdown_code_fences
@@ -185,7 +185,7 @@ def _needs_kmap_hints(*texts: str) -> bool:
 class RTLGenerator:
     def __init__(
         self,
-        cfg: OpenAIConfig,
+        cfg: LLMConfig,
         *,
         ablation: bool = False,
     ):
@@ -210,8 +210,8 @@ class RTLGenerator:
         return SafeReActAgent(
             name=name,
             sys_prompt=sys_prompt,
-            model=make_openai_model(self._cfg),
-            formatter=make_formatter(self._cfg.model),
+            model=make_chat_model(self._cfg),
+            formatter=make_formatter(self._cfg),
             memory=InMemoryMemory(),
             max_iters=10,
         )

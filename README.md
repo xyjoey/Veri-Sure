@@ -145,14 +145,33 @@ z3 --version
 
 ### 3. LLM endpoint
 
-Veri-Sure talks to any OpenAI-compatible API:
+Veri-Sure supports **OpenAI** (and any OpenAI-compatible server, such as DeepSeek or vLLM), **Anthropic** and **Google Gemini**. Copy the template and fill in the provider you use:
 
 ```bash
-export OPENAI_API_KEY="..."
-# Optional: a custom endpoint and model (e.g., DeepSeek or a local vLLM server)
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-export OPENAI_MODEL="gpt-5.2"
+cp .env.example .env
 ```
+
+```dotenv
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=claude-opus-5-5
+```
+
+| Provider | `LLM_PROVIDER` | API key | Model (default) | Custom endpoint |
+|----------|----------------|---------|-----------------|-----------------|
+| OpenAI / OpenAI-compatible | `openai` | `OPENAI_API_KEY` | `OPENAI_MODEL` (`gpt-5.2`) | `OPENAI_BASE_URL` |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` (`claude-opus-5-5`) | `ANTHROPIC_BASE_URL` |
+| Google Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `GEMINI_MODEL` (`gemini-4-argon`) | `GEMINI_BASE_URL` |
+
+Settings are resolved in this order: command-line flags (`--provider`, `--model`, `--api-key`, `--base-url`) first, then your shell environment, then `.env`. Veri-Sure looks for `.env` in the current directory (or a parent) and then in the repository root; use `--env-file` to point elsewhere. `.env` is git-ignored, so your keys stay out of the repository.
+
+Request defaults follow each provider:
+
+- **OpenAI:** temperature 0, top_p 1, at most 4096 output tokens.
+- **Anthropic:** no `temperature`/`top_p` (current Claude models reject them), at most 16000 output tokens, `effort: high` on Claude Opus 5.5, and server-side refusal fallbacks on the Claude API (set `ANTHROPIC_FALLBACKS=off` to disable them).
+- **Gemini:** the API's own defaults.
+
+`--reasoning-effort` sets OpenAI's `reasoning_effort`, Claude's effort level, or Gemini's `thinking_level`.
 
 ## 🚀 Quick Start
 
@@ -160,10 +179,11 @@ Generate RTL from a natural-language spec:
 
 ```bash
 python -m eda_agent run \
-  --prompt "Implement a 4-bit adder with inputs a[3:0], b[3:0], and output sum[4:0]" \
-  --temperature 0 \
-  --top-p 1 \
-  --max-completion-tokens 2000
+  --prompt "Implement a 4-bit adder with inputs a[3:0], b[3:0], and output sum[4:0]"
+
+# Same, with a different provider than the one in .env
+python -m eda_agent run --provider gemini \
+  --prompt "Implement a 4-bit adder with inputs a[3:0], b[3:0], and output sum[4:0]"
 ```
 
 Run a single benchmark problem against its golden testbench:
@@ -186,7 +206,7 @@ The command prints `PASS` or `FAIL` (exit code 0 or 2) and the path of the run d
 | `asserter/`, `boolean_proof/` | Formal-verification artifacts and reports |
 | `*_prompt.txt`, `*_raw_output.txt` | Prompts sent to and raw replies from each agent |
 
-Other useful options: `--model`, `--base-url`, `--reasoning-effort`, `--stream`, `--sim-max-retry`, `--debug-max-trials`, `--runs-root`, and `--ablation` (Coder only: standalone generation from the spec with syntax-check retries, with no contract, testbench or debugging). See `python -m eda_agent run --help` for the full list.
+Other useful options: `--provider`, `--model`, `--base-url`, `--env-file`, `--reasoning-effort`, `--temperature`, `--top-p`, `--max-tokens`, `--stream`, `--sim-max-retry`, `--debug-max-trials`, `--runs-root`, and `--ablation` (Coder only: standalone generation from the spec with syntax-check retries, with no contract, testbench or debugging). See `python -m eda_agent run --help` for the full list.
 
 ## 📊 Evaluation on VerilogEval-v2-EXT
 
@@ -197,6 +217,9 @@ python benchmarks/run_verilog_eval_v2.py --samples 1 --jobs 4
 # A single problem, or the first N problems
 python benchmarks/run_verilog_eval_v2.py --problem Prob031_dff
 python benchmarks/run_verilog_eval_v2.py --limit 10
+
+# Override the provider from .env for one run
+python benchmarks/run_verilog_eval_v2.py --provider anthropic --limit 10
 ```
 
 Results are written to `runs/verilog-eval-v2/` by default (`--out-root` to change). See `python benchmarks/run_verilog_eval_v2.py --help` for all options.

@@ -11,7 +11,7 @@ from typing import Any, Iterable, Literal, Sequence
 
 from .asserter_agent import AsserterAgent, AsserterSpec
 from .bash_tools import CommandResult, run_bash_command
-from .config import OpenAIConfig
+from .config import LLMConfig
 from .utils import clip_text
 
 
@@ -361,7 +361,7 @@ def _render_asserter_sv(
 class Asserter:
     def __init__(
         self,
-        cfg: OpenAIConfig,
+        cfg: LLMConfig,
         *,
         sim_timeout_s: int = 120,
     ) -> None:
@@ -469,8 +469,8 @@ class Asserter:
         spec: AsserterSpec
         if assert_body_override is not None:
             spec = AsserterSpec(reasoning="(assert_body_override)", assert_body=assert_body_override)
-        elif self._cfg.api_key is None:
-            spec = AsserterSpec(reasoning="(no api_key; baseline-only asserter)", assert_body="")
+        elif not self._cfg.has_credentials:
+            spec = AsserterSpec(reasoning="(no credentials; baseline-only asserter)", assert_body="")
         else:
             agent = self._ensure_agent()
             spec = await agent.chat(

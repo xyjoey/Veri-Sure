@@ -10,7 +10,7 @@ from typing import Any, Iterable, Literal, Sequence
 
 from .bash_tools import CommandResult, run_bash_command
 from .boolean_proofer_agent import BooleanProoferAgent, BooleanProoferSpec
-from .config import OpenAIConfig
+from .config import LLMConfig
 from .trace_slicer import build_driver_map, dynamic_slice, parse_rtl_blocks
 from .utils import clip_text
 
@@ -408,7 +408,7 @@ def _require_executable(name: str) -> None:
 class BooleanProofer:
     def __init__(
         self,
-        cfg: OpenAIConfig,
+        cfg: LLMConfig,
         *,
         sby_timeout_s: int = 120,
     ) -> None:

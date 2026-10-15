@@ -11,7 +11,7 @@ from typing import Callable, List, Tuple
 from .bash_tools import CommandResult, run_bash_command
 from .architect_agent import ArchitectAgent
 from .contract_linter import lint_contract_json, render_contract_issues
-from .config import OpenAIConfig
+from .config import LLMConfig
 from .rtl_editor import RTLEditor
 from .model import get_model_usage
 from .rtl_generator import RTLGenerator
@@ -43,7 +43,7 @@ class TopAgentResult:
 class TopAgent:
     """Multi-agent RTL generation loop (Architect/Verifier/Coder/Debugger)."""
 
-    def __init__(self, cfg: OpenAIConfig, *, config: TopAgentConfig | None = None) -> None:
+    def __init__(self, cfg: LLMConfig, *, config: TopAgentConfig | None = None) -> None:
         self.cfg = cfg
         self.config = config or TopAgentConfig()
 

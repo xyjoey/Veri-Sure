@@ -15,8 +15,8 @@ from agentscope.tool import ToolResponse, Toolkit
 from .agents import SafeReActAgent, clear_memory_safely
 from .asserter import Asserter
 from .boolean_proofer import BooleanProofer
-from .config import OpenAIConfig
-from .model import make_formatter, make_openai_model
+from .config import LLMConfig
+from .model import make_formatter, make_chat_model
 from .sim_reviewer import SimReviewer, check_syntax
 from .trace_report import build_trace_report
 from .trace_slicer import RtlBlock
@@ -413,7 +413,7 @@ class _EditSession:
 
 
 class RTLEditor:
-    def __init__(self, cfg: OpenAIConfig, *, sim_reviewer: SimReviewer, max_trials: int = 30) -> None:
+    def __init__(self, cfg: LLMConfig, *, sim_reviewer: SimReviewer, max_trials: int = 30) -> None:
         self._cfg = cfg
         self.sim_reviewer = sim_reviewer
         self.max_trials = int(max_trials)
@@ -432,8 +432,8 @@ class RTLEditor:
         self._agent = SafeReActAgent(
             name="Debugger",
             sys_prompt=SYSTEM_PROMPT,
-            model=make_openai_model(cfg),
-            formatter=make_formatter(cfg.model),
+            model=make_chat_model(cfg),
+            formatter=make_formatter(cfg),
             toolkit=toolkit,
             memory=InMemoryMemory(),
             max_iters=10,

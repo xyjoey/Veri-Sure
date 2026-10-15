@@ -57,7 +57,7 @@ from benchmarks.cvdp_adapter import (
     place_generated_code,
     evaluate_with_cvdp_harness,
 )
-from eda_agent.config import load_openai_config
+from eda_agent.config import add_llm_arguments, llm_config_from_args
 from eda_agent.verilator_judge import make_timestamped_dir
 from eda_agent.top_agent import TopAgent, TopAgentConfig
 
@@ -127,10 +127,6 @@ async def main_async(argv: list[str] | None = None) -> int:
 
     # Veri-Sure config
     parser.add_argument("--samples", type=int, default=1)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top-p", type=float, default=1.0)
-    parser.add_argument("--stream", action="store_true")
-    parser.add_argument("--max-completion-tokens", type=int, default=4096)
     parser.add_argument("--sim-max-retry", type=int, default=4)
     parser.add_argument("--debug-max-trials", type=int, default=30)
     parser.add_argument("--ablation", action="store_true")
@@ -145,30 +141,21 @@ async def main_async(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--eval-timeout", type=float, default=300.0)
 
-    # Model config
-    parser.add_argument("--model", default=None)
-    parser.add_argument("--base-url", default=None)
-    parser.add_argument("--api-key", default=None)
-    parser.add_argument("--extra-body", default=None)
-
     # Output
     parser.add_argument("--out-root", default="runs/cvdp", help="Root output directory")
+
+    # Model config
+    add_llm_arguments(parser)
 
     args = parser.parse_args(argv)
 
     # ------- Load model config -------
-    cfg = load_openai_config(
-        model=args.model,
-        api_key=args.api_key,
-        base_url=args.base_url,
-        extra_body=args.extra_body,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        max_completion_tokens=args.max_completion_tokens,
-        stream=args.stream,
-    )
-    if not cfg.api_key:
-        raise SystemExit("Missing OPENAI_API_KEY (set env or pass --api-key).")
+    cfg = llm_config_from_args(args)
+    missing = cfg.missing_credentials_message()
+    if missing:
+        raise SystemExit(missing)
+    # Record the effective (provider-resolved) settings in the run name and metadata below.
+    args.temperature, args.top_p, args.max_completion_tokens = cfg.temperature, cfg.top_p, cfg.max_tokens
 
     # ------- Load dataset -------
     print("Loading CVDP dataset...")
@@ -232,6 +219,7 @@ async def main_async(argv: list[str] | None = None) -> int:
                 "debug_max_trials": args.debug_max_trials,
                 "ablation": args.ablation,
                 "eval_mode": args.eval_mode,
+                "provider": cfg.provider,
                 "model": cfg.model,
                 "base_url": cfg.base_url,
                 "total_problems": len(problems),

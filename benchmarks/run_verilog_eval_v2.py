@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from eda_agent.config import load_openai_config
+from eda_agent.config import add_llm_arguments, llm_config_from_args
 from eda_agent.verilator_judge import make_timestamped_dir, run_verilator_testbench_sync
 from eda_agent.top_agent import TopAgent, TopAgentConfig
 
@@ -180,10 +180,6 @@ async def main_async(argv: list[str] | None = None) -> int:
         default="spec-to-rtl",
     )
     parser.add_argument("--samples", type=int, default=1)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top-p", type=float, default=1.0)
-    parser.add_argument("--stream", action="store_true", help="Enable streaming model output")
-    parser.add_argument("--max-completion-tokens", type=int, default=4096)
     parser.add_argument("--sim-max-retry", type=int, default=4)
     parser.add_argument(
         "--debug-max-trials",
@@ -207,31 +203,17 @@ async def main_async(argv: list[str] | None = None) -> int:
         help="Max number of concurrent (problem,sample) evaluations",
     )
 
-    parser.add_argument("--model", default=None, help="OpenAI model name (default: env OPENAI_MODEL)")
-    parser.add_argument("--base-url", default=None, help="OpenAI base_url (default: env OPENAI_BASE_URL)")
-    parser.add_argument("--api-key", default=None, help="OpenAI API key (default: env OPENAI_API_KEY)")
-    parser.add_argument(
-        "--extra-body",
-        default=None,
-        help="OpenAI extra_body JSON string (default: env OPENAI_EXTRA_BODY)",
-    )
-
     parser.add_argument("--out-root", default="runs/verilog-eval-v2", help="Root directory for outputs")
+    add_llm_arguments(parser)
 
     args = parser.parse_args(argv)
 
-    cfg = load_openai_config(
-        model=args.model,
-        api_key=args.api_key,
-        base_url=args.base_url,
-        extra_body=args.extra_body,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        max_completion_tokens=args.max_completion_tokens,
-        stream=args.stream,
-    )
-    if not cfg.api_key:
-        raise SystemExit("Missing OPENAI_API_KEY (set env or pass --api-key).")
+    cfg = llm_config_from_args(args)
+    missing = cfg.missing_credentials_message()
+    if missing:
+        raise SystemExit(missing)
+    # Record the effective (provider-resolved) settings in the run name and metadata below.
+    args.temperature, args.top_p, args.max_completion_tokens = cfg.temperature, cfg.top_p, cfg.max_tokens
 
     if args.dataset_dir:
         dataset_dir = Path(args.dataset_dir).expanduser().resolve()
@@ -274,6 +256,7 @@ async def main_async(argv: list[str] | None = None) -> int:
                 "ablation": args.ablation,
                 "timeout_s": args.timeout_s,
                 "dataset_dir": str(dataset_dir),
+                "provider": cfg.provider,
                 "model": cfg.model,
                 "base_url": cfg.base_url,
             },

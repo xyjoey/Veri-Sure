@@ -7,8 +7,8 @@ from agentscope.message import Msg
 from pydantic import BaseModel
 
 from .agents import SafeReActAgent, clear_memory_safely
-from .config import OpenAIConfig
-from .model import make_formatter, make_openai_model
+from .config import LLMConfig
+from .model import make_formatter, make_chat_model
 from .prompts import FAILED_TRIAL_PROMPT, TAG_ORDER_PROMPT, TB_4_SHOT_EXAMPLES
 from .utils import add_lineno, clip_text, extract_xml_tag, strip_markdown_code_fences
 
@@ -273,14 +273,14 @@ Non-golden mode reminders:
 class TBGenerator:
     def __init__(
         self,
-        cfg: OpenAIConfig,
+        cfg: LLMConfig,
     ):
         self._cfg = cfg
         self._agent = SafeReActAgent(
             name="Verifier",
             sys_prompt=SYSTEM_PROMPT,
-            model=make_openai_model(cfg),
-            formatter=make_formatter(cfg.model),
+            model=make_chat_model(cfg),
+            formatter=make_formatter(cfg),
             memory=InMemoryMemory(),
             max_iters=10,
         )

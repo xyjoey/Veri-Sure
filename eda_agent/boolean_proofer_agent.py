@@ -5,8 +5,8 @@ from agentscope.message import Msg
 from pydantic import BaseModel
 
 from .agents import SafeReActAgent, clear_memory_safely
-from .config import OpenAIConfig
-from .model import make_formatter, make_openai_model
+from .config import LLMConfig
+from .model import make_formatter, make_chat_model
 from .utils import clip_text, extract_xml_tag, strip_markdown_code_fences
 
 
@@ -102,13 +102,13 @@ class BooleanProoferSpec(BaseModel):
 
 
 class BooleanProoferAgent:
-    def __init__(self, cfg: OpenAIConfig) -> None:
+    def __init__(self, cfg: LLMConfig) -> None:
         self._cfg = cfg
         self._agent = SafeReActAgent(
             name="BooleanProofer",
             sys_prompt=SYSTEM_PROMPT,
-            model=make_openai_model(cfg),
-            formatter=make_formatter(cfg.model),
+            model=make_chat_model(cfg),
+            formatter=make_formatter(cfg),
             memory=InMemoryMemory(),
             max_iters=10,
         )

@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
-from agentscope.formatter import OpenAIChatFormatter
+from agentscope.formatter import AnthropicChatFormatter, GeminiChatFormatter, OpenAIChatFormatter
 from agentscope.formatter._truncated_formatter_base import TruncatedFormatterBase
 from agentscope.message import (
     Msg,
     TextBlock,
+    ThinkingBlock,
     ImageBlock,
     AudioBlock,
     ToolUseBlock,
     ToolResultBlock,
 )
-from agentscope.model import ChatModelBase, OpenAIChatModel
+from agentscope.model import (
+    AnthropicChatModel,
+    ChatModelBase,
+    GeminiChatModel,
+    OpenAIChatModel,
+)
 
-from eda_agent.config import OpenAIConfig
+from eda_agent.config import LLMConfig
 
 
 class Llama4ChatFormatter(TruncatedFormatterBase):
@@ -191,12 +198,16 @@ class UsageTrackingModel(ChatModelBase):
         res = await self._base_model(*args, **kwargs)
         if self._base_model.stream:
             async def _gen():
-                seen_usage = False
-                async for chunk in res:
-                    if (not seen_usage) and getattr(chunk, "usage", None):
-                        self._accumulate_usage(chunk.usage)
-                        seen_usage = True
-                    yield chunk
+                last_usage = None
+                try:
+                    async for chunk in res:
+                        if getattr(chunk, "usage", None):
+                            last_usage = chunk.usage
+                        yield chunk
+                finally:
+                    # Streamed usage is cumulative (Anthropic even updates it in place after the
+                    # last content chunk), so count it once, when the stream ends.
+                    self._accumulate_usage(last_usage)
             return _gen()
         self._accumulate_usage(getattr(res, "usage", None))
         return res
@@ -219,33 +230,227 @@ def _is_llama_model(model_name: str) -> bool:
     return any(k in name_lower for k in ["llama", "meta-llama"])
 
 
-def make_openai_model(cfg: OpenAIConfig) -> ChatModelBase:
-    client_args: dict[str, Any] = {}
-    if cfg.base_url:
-        client_args["base_url"] = cfg.base_url
+def _function_call_signatures(response: Any) -> list[bytes | None]:
+    """Thought signatures of the function-call parts in a Gemini response, in order."""
+    candidates = getattr(response, "candidates", None) or []
+    content = getattr(candidates[0], "content", None) if candidates else None
+    parts = getattr(content, "parts", None) or []
+    return [getattr(p, "thought_signature", None) for p in parts if getattr(p, "function_call", None)]
 
-    base_model = OpenAIChatModel(
+
+def _attach_thought_signatures(blocks: list, signatures: list[bytes | None]) -> None:
+    tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+    for block, signature in zip(tool_blocks, signatures):
+        if signature:
+            block["thought_signature"] = base64.b64encode(signature).decode("ascii")
+
+
+class _GeminiChatModel(GeminiChatModel):
+    """GeminiChatModel that keeps each tool call's thought signature.
+
+    Gemini 3 models reject a request (HTTP 400) when a function call from the current turn is
+    sent back without the `thought_signature` it came with. AgentScope 1.0.7 drops these, so we
+    store each one (base64) on its ToolUseBlock and `_GeminiChatFormatter` sends it back.
+    """
+
+    def _parse_gemini_generation_response(self, start_datetime, response, structured_model=None):  # type: ignore[override]
+        parsed = super()._parse_gemini_generation_response(start_datetime, response, structured_model)
+        _attach_thought_signatures(parsed.content, _function_call_signatures(response))
+        return parsed
+
+    async def _parse_gemini_stream_generation_response(self, start_datetime, response, structured_model=None):  # type: ignore[override]
+        signatures: list[bytes | None] = []
+
+        async def recorded():
+            async for chunk in response:
+                signatures.extend(_function_call_signatures(chunk))
+                yield chunk
+
+        tool_calls: list = []
+        async for parsed in super()._parse_gemini_stream_generation_response(
+            start_datetime, recorded(), structured_model
+        ):
+            # AgentScope reports only the latest chunk's tool calls; keep all of them.
+            tool_calls.extend(b for b in parsed.content if b.get("type") == "tool_use")
+            _attach_thought_signatures(tool_calls, signatures)
+            parsed.content = [b for b in parsed.content if b.get("type") != "tool_use"] + tool_calls
+            yield parsed
+
+
+class _GeminiChatFormatter(GeminiChatFormatter):
+    """GeminiChatFormatter that sends each tool call's thought signature back (see _GeminiChatModel)."""
+
+    async def _format(self, msgs: list[Msg]) -> list[dict]:  # type: ignore[override]
+        formatted = await super()._format(msgs)
+        signatures = [
+            block.get("thought_signature")
+            for msg in msgs
+            for block in msg.get_content_blocks()
+            if block.get("type") == "tool_use"
+        ]
+        parts = [part for message in formatted for part in message.get("parts", []) if "function_call" in part]
+        for part, signature in zip(parts, signatures):
+            if signature:
+                part["thought_signature"] = base64.b64decode(signature)
+        return formatted
+
+
+class _AudioSafeStream:
+    """Wraps an OpenAI AsyncStream so each delta's `audio` is a dict, never None."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    async def __aenter__(self) -> "_AudioSafeStream":
+        await self._stream.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> Any:
+        return await self._stream.__aexit__(*exc_info)
+
+    def __aiter__(self):
+        return self._chunks()
+
+    async def _chunks(self):
+        async for chunk in self._stream:
+            for choice in chunk.choices or []:
+                if getattr(choice.delta, "audio", {}) is None:
+                    choice.delta.audio = {}
+            yield chunk
+
+
+class _OpenAIChatModel(OpenAIChatModel):
+    """OpenAIChatModel whose streaming works with current openai SDKs.
+
+    AgentScope 1.0.7 checks `"data" in choice.delta.audio`, which raises TypeError once the SDK's
+    stream deltas always have an `audio` attribute (None unless audio is requested).
+    """
+
+    def _parse_openai_stream_response(self, start_datetime, response, structured_model=None):  # type: ignore[override]
+        return super()._parse_openai_stream_response(start_datetime, _AudioSafeStream(response), structured_model)
+
+
+class _AnthropicChatModel(AnthropicChatModel):
+    """AnthropicChatModel that keeps signed thinking blocks whose text is empty when streaming.
+
+    Current Claude models return thinking with empty text by default (only the signature is set).
+    AgentScope 1.0.7's stream parser drops such blocks, but Claude needs them passed back with the
+    tool calls they precede, so we re-insert them (the non-streaming parser already keeps them).
+    """
+
+    async def _parse_anthropic_stream_completion_response(self, start_datetime, response, structured_model=None):  # type: ignore[override]
+        signature = ""
+
+        async def recorded():
+            nonlocal signature
+            async for event in response:
+                delta = getattr(event, "delta", None)
+                if event.type == "content_block_delta" and getattr(delta, "type", None) == "signature_delta":
+                    signature = delta.signature
+                yield event
+
+        async for parsed in super()._parse_anthropic_stream_completion_response(
+            start_datetime, recorded(), structured_model
+        ):
+            if signature and not any(b.get("type") == "thinking" for b in parsed.content):
+                thinking_block = ThinkingBlock(type="thinking", thinking="")
+                thinking_block["signature"] = signature
+                parsed.content = [thinking_block, *parsed.content]
+            yield parsed
+
+
+# Claude models that support server-side refusal fallbacks (`fallbacks: "default"`).
+_CLAUDE_FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
+
+
+def _sampling_kwargs(cfg: LLMConfig) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if cfg.temperature is not None:
+        kwargs["temperature"] = cfg.temperature
+    if cfg.top_p is not None:
+        kwargs["top_p"] = cfg.top_p
+    return kwargs
+
+
+def _make_openai_model(cfg: LLMConfig) -> ChatModelBase:
+    generate_kwargs = _sampling_kwargs(cfg)
+    if cfg.max_tokens is not None:
+        generate_kwargs["max_completion_tokens"] = cfg.max_tokens
+    if cfg.extra_body:
+        generate_kwargs["extra_body"] = cfg.extra_body
+    return _OpenAIChatModel(
         model_name=cfg.model,
         api_key=cfg.api_key,
         stream=cfg.stream,
         reasoning_effort=cfg.reasoning_effort,  # type: ignore[arg-type]
         organization=cfg.organization,
-        client_args=client_args or None,
-        generate_kwargs=cfg.generate_kwargs or None,
+        client_args={"base_url": cfg.base_url} if cfg.base_url else None,
+        generate_kwargs=generate_kwargs or None,
     )
+
+
+def _make_anthropic_model(cfg: LLMConfig) -> ChatModelBase:
+    generate_kwargs = _sampling_kwargs(cfg)
+    extra_body = dict(cfg.extra_body)
+    # Claude Opus 5.5 defaults to medium effort; RTL generation and debugging warrant high.
+    effort = cfg.reasoning_effort or ("high" if cfg.model == "claude-opus-5-5" else None)
+    if effort:
+        extra_body["output_config"] = {**extra_body.get("output_config", {}), "effort": effort}
+    # Server-side refusal fallbacks are a Claude API feature; skip them behind a custom base URL.
+    if cfg.refusal_fallbacks and cfg.model in _CLAUDE_FALLBACK_MODELS and not cfg.base_url:
+        extra_body.setdefault("fallbacks", "default")
+        generate_kwargs["extra_headers"] = {"anthropic-beta": "server-side-fallback-2026-07-01"}
+    if extra_body:
+        generate_kwargs["extra_body"] = extra_body
+    return _AnthropicChatModel(
+        model_name=cfg.model,
+        api_key=cfg.api_key,
+        max_tokens=cfg.max_tokens or 16000,
+        stream=cfg.stream,
+        client_args={"base_url": cfg.base_url} if cfg.base_url else None,
+        generate_kwargs=generate_kwargs or None,
+    )
+
+
+def _make_gemini_model(cfg: LLMConfig) -> ChatModelBase:
+    generate_kwargs = _sampling_kwargs(cfg)
+    if cfg.max_tokens is not None:
+        generate_kwargs["max_output_tokens"] = cfg.max_tokens
+    if cfg.extra_body:
+        generate_kwargs["http_options"] = {"extra_body": cfg.extra_body}
+    return _GeminiChatModel(
+        model_name=cfg.model,
+        api_key=cfg.api_key,  # type: ignore[arg-type]  # None: google-genai reads GEMINI_API_KEY/GOOGLE_API_KEY
+        stream=cfg.stream,
+        thinking_config={"thinking_level": cfg.reasoning_effort} if cfg.reasoning_effort else None,
+        client_args={"http_options": {"base_url": cfg.base_url}} if cfg.base_url else None,
+        generate_kwargs=generate_kwargs or None,
+    )
+
+
+def make_chat_model(cfg: LLMConfig) -> ChatModelBase:
+    if cfg.provider == "anthropic":
+        base_model = _make_anthropic_model(cfg)
+    elif cfg.provider == "gemini":
+        base_model = _make_gemini_model(cfg)
+    else:
+        base_model = _make_openai_model(cfg)
     return UsageTrackingModel(base_model)
 
 
-def make_formatter(model_name: str | None = None) -> OpenAIChatFormatter | Llama4ChatFormatter:
-    """Create a message formatter appropriate for the model.
-    
-    Args:
-        model_name: The model name to determine formatter type. If None or not
-                   a Llama model, returns the standard OpenAI formatter.
-    
-    Returns:
-        A formatter compatible with the specified model.
+def make_formatter(cfg: LLMConfig | str | None = None) -> TruncatedFormatterBase:
+    """Create the message formatter for the configured provider.
+
+    A plain string is treated as an OpenAI-compatible model name (the previous signature).
     """
+    if isinstance(cfg, LLMConfig):
+        if cfg.provider == "anthropic":
+            return AnthropicChatFormatter()
+        if cfg.provider == "gemini":
+            return _GeminiChatFormatter()
+        model_name: str | None = cfg.model
+    else:
+        model_name = cfg
     if model_name and _is_llama_model(model_name):
         return Llama4ChatFormatter()
     return OpenAIChatFormatter()

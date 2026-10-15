@@ -1,6 +1,9 @@
 agentscope==1.0.7
 # agentscope 1.0.7 imports mcp's `streamablehttp_client`, which mcp 2.x removed.
 mcp>=1,<2
+# Gemini provider (agentscope does not install it).
+google-genai>=1,<2
+python-dotenv>=1,<2
 pydantic>=2,<3
 tqdm>=4,<5
 tree-sitter>=0.25,<0.26
