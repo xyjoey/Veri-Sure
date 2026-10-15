@@ -4,7 +4,7 @@
 
 **Jiale Liu**<sup>1</sup>, **Taiyu Zhou**<sup>2</sup>, **Tianqi Jiang**<sup>3</sup>
 
-<sup>1</sup>The University of Edinburgh &nbsp;&nbsp; <sup>2</sup>University of Macau &nbsp;&nbsp; <sup>3</sup>The Chinese University of Hong Kong, Shenzhen
+<sup>1</sup>The University of Edinburgh &nbsp;&nbsp; <sup>2</sup>University of Macau &nbsp;&nbsp; <sup>3</sup>CUHK, Shenzhen
 
 [![arXiv](https://img.shields.io/badge/arXiv-2601.19747-b31b1b.svg?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2601.19747)
 [![NeurIPS 2026](https://img.shields.io/badge/NeurIPS-2026-4b44ce.svg)](https://neurips.cc/Conferences/2026)
@@ -23,13 +23,13 @@
 
 - 🎉 **Veri-Sure** has been accepted to **NeurIPS 2026**!
 - 💻 We release the code and the **VerilogEval-v2-EXT** benchmark.
-- 📄 The paper is on [arXiv](https://arxiv.org/abs/2601.19747); the camera-ready version will be uploaded soon.
+- 📄 The paper is released on [arXiv](https://arxiv.org/abs/2601.19747).
 
 ## 📖 Overview
 
 Writing RTL is different from writing software: hardware description languages describe concurrent behavior with strict cycle-level timing. LLM-based RTL generation is therefore held back by **(i)** sparse feedback and limited test coverage from simulation-only evaluation, **(ii)** regressions and repair hallucinations from regenerating the whole file during debugging, and **(iii)** semantic drift as intent is reinterpreted across repair iterations and agent handoffs.
 
-**Veri-Sure** is a multi-agent framework that addresses all three. It turns the natural-language spec into a **design contract** that every agent follows, debugs failures with **trace-driven temporal analysis** and **static dependency slicing** so that the Debugger makes small, **localized patches**, and adds **formal verification** (assertions and Boolean equivalence proofs) to the debugging loop. We also introduce **VerilogEval-v2-EXT**, which extends VerilogEval-v2 with 53 industrial-grade tasks and Easy/Medium/Hard difficulty levels. With GPT-5.2, Veri-Sure reaches **93.30%** functional Pass@1, ahead of standalone LLMs and prior agentic systems.
+**Veri-Sure** is a multi-agent framework. It turns the natural-language spec into a **design contract** that every agent follows, debugs failures with **trace-driven temporal analysis** and **static dependency slicing** so that the Debugger makes small, **localized patches**, and adds **formal verification** (assertions and Boolean equivalence proofs) to the debugging loop. We also introduce **VerilogEval-v2-EXT**, which extends VerilogEval-v2 with 53 industrial-grade tasks and Easy/Medium/Hard difficulty levels. With GPT-5.2, Veri-Sure reaches **93.30%** functional Pass@1, ahead of standalone LLMs and prior agentic systems.
 
 ## ✨ Highlights
 
@@ -38,19 +38,6 @@ Writing RTL is different from writing software: hardware description languages d
 - ✂️ **Static slicing & localized patching.** A tree-sitter dependency slice narrows a failure to a few suspect RTL blocks. The Debugger may only edit those blocks, and any patch that does not improve the failure is rolled back. A patch changes **7.9 lines** on average, versus 68.8 lines for whole-file regeneration.
 - 🧪 **Formal verification.** An **Asserter** binds contract-derived SystemVerilog assertions to the DUT, and a **Boolean Proofer** proves combinational outputs against a contract-derived reference model with a SymbiYosys miter. Both feed hints to the Debugger.
 - 📊 **VerilogEval-v2-EXT.** 209 problems (156 original + 53 new) covering arithmetic, communication protocols, FIFOs/CDC, DSP and system control, split into Easy (51), Medium (91) and Hard (67).
-
-## 🤖 The Agents
-
-| Agent | Role | Code |
-|-------|------|------|
-| 🏛️ **Architect** | Turns the spec into a structured design contract; re-invoked to fix contract lint errors | [`architect_agent.py`](eda_agent/architect_agent.py), [`contract_linter.py`](eda_agent/contract_linter.py) |
-| 🧪 **Verifier** | Writes a self-checking testbench that follows the contract | [`tb_generator.py`](eda_agent/tb_generator.py) |
-| 💻 **Coder** | Generates synthesizable SystemVerilog RTL | [`rtl_generator.py`](eda_agent/rtl_generator.py) |
-| 🔧 **Debugger** | Patches suspect blocks using the trace report, slice and formal hints | [`rtl_editor.py`](eda_agent/rtl_editor.py), [`trace_report.py`](eda_agent/trace_report.py), [`trace_slicer.py`](eda_agent/trace_slicer.py) |
-| ⏱️ **Asserter** | Generates timing/reset/latency assertions and runs them under Verilator | [`asserter.py`](eda_agent/asserter.py), [`asserter_agent.py`](eda_agent/asserter_agent.py) |
-| ⚖️ **Boolean Proofer** | Proves combinational outputs against a reference model with SymbiYosys + Z3 | [`boolean_proofer.py`](eda_agent/boolean_proofer.py), [`boolean_proofer_agent.py`](eda_agent/boolean_proofer_agent.py) |
-
-The whole loop is orchestrated by [`top_agent.py`](eda_agent/top_agent.py).
 
 ## 🏆 Main Results
 
@@ -100,32 +87,6 @@ The whole loop is orchestrated by [`top_agent.py`](eda_agent/top_agent.py).
 | **Veri-Sure (w. GPT-5.2)** | - | 🥇 **100.00** / 🥇 **100.00** | 🥇 **100.00** / 🥇 **95.60** | 🥇 **100.00** / 🥇 **85.07** | 🥇 **100.00** / 🥇 **93.30** |
 
 Params lists total (active) parameters for MoE models and total parameters for dense models.
-
-### 🔬 Ablation Study
-
-Functional Pass@1 (%) with GPT-5.2; subscripts show the drop relative to the full framework.
-
-| Variant | Hard | Overall |
-|---------|------|---------|
-| GPT-5.2 (Standalone) | 59.70 <sub>↓25.4</sub> | 76.56 <sub>↓16.7</sub> |
-| + Simulator Feedback & Fix | 59.70 <sub>↓25.4</sub> | 77.99 <sub>↓15.3</sub> |
-| **Veri-Sure** | **85.07** | **93.30** |
-| &nbsp;&nbsp;w/o Design Contract | 82.09 <sub>↓3.0</sub> | 90.43 <sub>↓2.9</sub> |
-| &nbsp;&nbsp;w/o Tracing only | 76.12 <sub>↓9.0</sub> | 88.04 <sub>↓5.3</sub> |
-| &nbsp;&nbsp;w/o Slicing only | 77.61 <sub>↓7.5</sub> | 89.00 <sub>↓4.3</sub> |
-| &nbsp;&nbsp;w/o Patching only | 79.10 <sub>↓6.0</sub> | 89.95 <sub>↓3.4</sub> |
-| &nbsp;&nbsp;w/o Tracing, Slicing & Patching | 68.66 <sub>↓16.4</sub> | 82.30 <sub>↓11.0</sub> |
-| &nbsp;&nbsp;w/o Formal Verification | 73.13 <sub>↓11.9</sub> | 89.47 <sub>↓3.8</sub> |
-
-### 💰 Cost
-
-Per-task averages with GPT-5.2 as the backbone (paper, Appendix C.5). Veri-Sure reads more context but writes far less code, so it is the cheapest of the three.
-
-| Method | Input tokens | Output tokens | $ / task | $ / task (cached) |
-|--------|-------------:|--------------:|---------:|------------------:|
-| MAGE (10 samples) | 16,677 | 5,508 | 0.806 | 0.798 |
-| VerilogCoder | 25,872 | 11,718 | 0.209 | 0.197 |
-| **Veri-Sure** | 62,203 | 3,653 | **0.160** | **0.131** |
 
 ## 📦 The VerilogEval-v2-EXT Benchmark
 
@@ -236,62 +197,35 @@ python benchmarks/run_verilog_eval_v2.py --samples 1 --jobs 4
 # A single problem, or the first N problems
 python benchmarks/run_verilog_eval_v2.py --problem Prob031_dff
 python benchmarks/run_verilog_eval_v2.py --limit 10
-
-# Standalone-generation ablation (no contract, testbench or debugging)
-python benchmarks/run_verilog_eval_v2.py --ablation
 ```
 
 Results are written to `runs/verilog-eval-v2/` by default (`--out-root` to change). See `python benchmarks/run_verilog_eval_v2.py --help` for all options.
 
 > [!WARNING]
-> **API cost.** With GPT-5.2, Veri-Sure averaged about **$0.16 per task** in our runs (≈ $33 for all 209 problems; $0.13 per task with prompt caching). The actual cost depends on model pricing and on how many repair iterations each problem needs, so keep an eye on your API usage.
-
-## 📁 Repository Structure
-
-```text
-Veri-Sure/
-├── eda_agent/
-│   ├── cli.py                    # `python -m eda_agent run ...`
-│   ├── top_agent.py              # Orchestrates the generate → verify → debug loop
-│   ├── architect_agent.py        # Architect: spec → design contract
-│   ├── contract_linter.py        # Contract schema and consistency checks
-│   ├── tb_generator.py           # Verifier: self-checking testbench
-│   ├── rtl_generator.py          # Coder: RTL generation (+ standalone ablation mode)
-│   ├── rtl_editor.py             # Debugger: block-level read/replace/simulate tools
-│   ├── trace_report.py           # Trace-driven temporal analysis (VCD)
-│   ├── trace_slicer.py           # Static dependency slicing (tree-sitter-verilog)
-│   ├── asserter*.py              # Asserter: contract-derived assertions
-│   ├── boolean_proofer*.py       # Boolean Proofer: SymbiYosys miter proofs
-│   ├── sim_reviewer.py           # Verilator syntax check and simulation
-│   └── prompts.py, model.py, config.py, ...
-├── benchmarks/
-│   ├── run_verilog_eval_v2.py    # Benchmark runner
-│   └── verilogeval-v2-ext/       # VerilogEval-v2-EXT (209 problems)
-└── attachments/                  # Figures
-```
+> **API cost.** Running Veri-Sure on all 209 problems can be very expensive, please keep track of your API usage. We recommend running a small subset first to verify your setup.
 
 ## 📝 Citation
 
 If you find Veri-Sure or VerilogEval-v2-EXT useful, please cite our paper:
 
 ```bibtex
-@inproceedings{liu2026verisure,
-  title     = {{Veri-Sure}: Multi-Agent {RTL} Code Generation with Temporal Tracing, Slicing and Formal Verification},
-  author    = {Liu, Jiale and Zhou, Taiyu and Jiang, Tianqi},
-  booktitle = {Advances in Neural Information Processing Systems},
-  volume    = {39},
-  year      = {2026}
+@misc{liu2026verisure,
+  title         = {{Veri-Sure}: Multi-Agent {RTL} Code Generation with Temporal Tracing, Slicing and Formal Verification},
+  author        = {Liu, Jiale and Zhou, Taiyu and Jiang, Tianqi},
+  year          = {2026},
+  eprint        = {2601.19747},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AR},
+  url           = {https://arxiv.org/abs/2601.19747}
 }
 ```
 
 ## 🙏 Acknowledgements
 
-VerilogEval-v2-EXT builds on [VerilogEval](https://github.com/NVlabs/verilog-eval), and some prompts are adapted from [VerilogCoder](https://arxiv.org/abs/2408.08927); our evaluation protocol follows [MAGE](https://github.com/stable-lab/MAGE). Veri-Sure is built on [AgentScope](https://github.com/agentscope-ai/agentscope), [Verilator](https://verilator.org), [Yosys](https://github.com/YosysHQ/yosys), [SymbiYosys](https://github.com/YosysHQ/sby), [Z3](https://github.com/Z3Prover/z3) and [tree-sitter-verilog](https://github.com/tree-sitter/tree-sitter-verilog). We thank the University of Edinburgh's ELM service and EDINA team for supporting API access. This work also used the Isambard-AI National AI Research Resource (AIRR), operated by the University of Bristol and funded by the UK Government's Department for Science, Innovation and Technology (DSIT) via UK Research and Innovation, and by the Science and Technology Facilities Council [ST/AIRR/I-A-I/1023].
+VerilogEval-v2-EXT builds on [VerilogEval](https://github.com/NVlabs/verilog-eval), and some prompts are adapted from [VerilogCoder](https://arxiv.org/abs/2408.08927); our evaluation protocol follows [MAGE](https://github.com/stable-lab/MAGE). Veri-Sure is built on [AgentScope](https://github.com/agentscope-ai/agentscope), [Verilator](https://verilator.org), [Yosys](https://github.com/YosysHQ/yosys), [SymbiYosys](https://github.com/YosysHQ/sby), [Z3](https://github.com/Z3Prover/z3) and [tree-sitter-verilog](https://github.com/tree-sitter/tree-sitter-verilog). 
+
+We thank the University of Edinburgh's ELM service and EDINA team for supporting API access. This work also used the Isambard-AI National AI Research Resource (AIRR), operated by the University of Bristol and funded by the UK Government's Department for Science, Innovation and Technology (DSIT) via UK Research and Innovation, and by the Science and Technology Facilities Council [ST/AIRR/I-A-I/1023].
 
 ## 📄 License
 
 This project is released under the [MIT License](LICENSE). It includes code from [verilog-eval](https://github.com/NVlabs/verilog-eval) and [human-eval](https://github.com/openai/human-eval), both MIT-licensed.
-
-## 📬 Contact
-
-For questions, please open an [issue](https://github.com/xyjoey/Veri-Sure/issues) or contact Jiale Liu ([Jiale.Liu@ed.ac.uk](mailto:Jiale.Liu@ed.ac.uk)).
