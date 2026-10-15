@@ -63,14 +63,18 @@ def _extract_topmodule_ports(rtl_text: str) -> dict[str, list[str]]:
 
     portlist = rtl_text[start:end]
     ports: list[tuple[str, str]] = []
+    direction: str | None = None
     for seg in portlist.split(","):
         seg = seg.strip().strip("()").strip()
         if not seg:
             continue
         mdir = re.search(r"\b(input|output|inout)\b", seg)
-        if not mdir:
+        if mdir:
+            direction = mdir.group(1)
+        elif direction is None:
+            # Non-ANSI port list (names only); directions are declared in the body.
             continue
-        direction = mdir.group(1)
+        # Otherwise a continuation like `input logic [3:0] a, b`: `b` inherits the direction.
         names = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", seg)
         names = [
             n

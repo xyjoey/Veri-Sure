@@ -219,6 +219,8 @@ class _EditSession:
         return {
             "is_sim_pass": is_sim_pass,
             "sim_mismatch_cnt": sim_mismatch_cnt,
+            # Full log for trace refresh; the tool wrapper pops it before replying to the agent.
+            "sim_output": sim_output,
             "sim_output_excerpt": _summarize_sim_log_json(sim_output),
             "sim_output_path": str(Path(self.output_dir, "debug_sim_output.json")),
         }
@@ -416,12 +418,16 @@ class RTLEditor:
         self.sim_reviewer = sim_reviewer
         self.max_trials = int(max_trials)
         self._session: _EditSession | None = None
+        # Kept across chat() calls so their (lazily created) models accumulate token usage.
+        self._proofer = BooleanProofer(cfg)
+        self._asserter = Asserter(cfg)
 
+        # The method names are the tool names the model sees; keep them in sync with the prompts.
         toolkit = Toolkit()
-        toolkit.register_tool_function(self._tool_list_suspect_blocks)
-        toolkit.register_tool_function(self._tool_read_block)
-        toolkit.register_tool_function(self._tool_replace_block)
-        toolkit.register_tool_function(self._tool_run_simulation)
+        toolkit.register_tool_function(self.list_suspect_blocks)
+        toolkit.register_tool_function(self.read_block)
+        toolkit.register_tool_function(self.replace_block)
+        toolkit.register_tool_function(self.run_simulation)
 
         self._agent = SafeReActAgent(
             name="Debugger",
@@ -433,32 +439,36 @@ class RTLEditor:
             max_iters=10,
         )
 
-    def reset(self) -> None:
-        clear_memory_safely(self._agent)
+    async def reset(self) -> None:
+        await clear_memory_safely(self._agent)
         self._session = None
 
-    async def _tool_list_suspect_blocks(self) -> ToolResponse:
+    def helper_models(self) -> list[Any]:
+        """Models of the BooleanProofer/Asserter helper agents created so far (for token accounting)."""
+        return [h._agent._agent.model for h in (self._proofer, self._asserter) if h._agent is not None]
+
+    async def list_suspect_blocks(self) -> ToolResponse:
         """List dynamically sliced suspect blocks (always/assign)."""
         if self._session is None:
             return ToolResponse(content=[{"type": "text", "text": "ERROR: No active edit session."}])
         blocks = self._session.list_suspect_blocks()
         return ToolResponse(content=[{"type": "text", "text": json.dumps(blocks, indent=2)}])
 
-    async def _tool_read_block(self, block_id: str) -> ToolResponse:
+    async def read_block(self, block_id: str) -> ToolResponse:
         """Read a suspect block by id with line numbers."""
         if self._session is None:
             return ToolResponse(content=[{"type": "text", "text": "ERROR: No active edit session."}])
         return ToolResponse(content=[{"type": "text", "text": self._session.read_block(block_id)}])
 
-    async def _tool_run_simulation(self) -> ToolResponse:
+    async def run_simulation(self) -> ToolResponse:
         """Run simulation for current rtl.sv + tb.sv; returns pass/fail and mismatch count."""
         if self._session is None:
             return ToolResponse(content=[{"type": "text", "text": "ERROR: No active edit session."}])
         result = await asyncio.to_thread(self._session.run_simulation)
+        sim_output = result.pop("sim_output", None)
         # Keep trace_report.json in sync even when the model triggers standalone re-simulations.
         try:
             if (not result.get("is_sim_pass")) and int(result.get("sim_mismatch_cnt") or 0) > 0:
-                sim_output = result.get("sim_output")
                 if isinstance(sim_output, str) and sim_output.strip():
                     await asyncio.to_thread(self._session._refresh_trace, sim_log_json=sim_output)
             if self._session.trace_report:
@@ -468,7 +478,7 @@ class RTLEditor:
             pass
         return ToolResponse(content=[{"type": "text", "text": json.dumps(result, indent=4)}])
 
-    async def _tool_replace_block(self, block_id: str, new_code: str) -> ToolResponse:
+    async def replace_block(self, block_id: str, new_code: str) -> ToolResponse:
         """Replace a suspect block by id, then syntax-check + simulate (rollback if mismatch increases)."""
         if self._session is None:
             return ToolResponse(content=[{"type": "text", "text": "ERROR: No active edit session."}])
@@ -489,7 +499,7 @@ class RTLEditor:
         contract_json: str,
         max_trials: int | None = None,
     ) -> Tuple[bool, str, int]:
-        self.reset()
+        await self.reset()
         tb_path = f"{output_dir_per_run}/tb.sv"
         rtl_path = f"{output_dir_per_run}/rtl.sv"
         session_max_trials = int(max_trials) if max_trials is not None else int(self.max_trials)
@@ -545,8 +555,7 @@ class RTLEditor:
         # This is NOT a source of truth; treat it only as parallel guidance.
         boolean_hint = ""
         try:
-            proofer = BooleanProofer(self._cfg)
-            proof_res = await proofer.prove(
+            proof_res = await self._proofer.prove(
                 contract_json=contract_json,
                 rtl_path=rtl_path,
                 output_dir=output_dir_per_run,
@@ -569,8 +578,7 @@ class RTLEditor:
                     fail_sigs.append(str(fo.get("sig")))
             fail_sigs = sorted(set(fail_sigs))
 
-            asserter = Asserter(self._cfg)
-            asserter_res = await asserter.analyze(
+            asserter_res = await self._asserter.analyze(
                 contract_json=contract_json,
                 rtl_path=rtl_path,
                 tb_path=tb_path,

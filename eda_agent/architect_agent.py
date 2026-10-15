@@ -164,8 +164,8 @@ class ArchitectAgent:
         self.last_prompt: str = ""
         self.last_raw_output: str = ""
 
-    def reset(self) -> None:
-        clear_memory_safely(self._agent)
+    async def reset(self) -> None:
+        await clear_memory_safely(self._agent)
 
     def _read_golden_tb_excerpt(self, golden_tb_path: str, *, max_chars: int = 6000) -> str:
         try:
@@ -198,7 +198,7 @@ class ArchitectAgent:
             )
 
     async def chat(self, input_spec: str, *, golden_tb_path: Optional[str] = None) -> ContractFormat:
-        self.reset()
+        await self.reset()
 
         golden_tb_block = ""
         if golden_tb_path:
@@ -223,7 +223,7 @@ class ArchitectAgent:
         lint_errors: str,
         golden_tb_path: Optional[str] = None,
     ) -> ContractFormat:
-        self.reset()
+        await self.reset()
 
         golden_tb_block = ""
         if golden_tb_path:

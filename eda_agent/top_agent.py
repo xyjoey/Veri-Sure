@@ -4,8 +4,9 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shlex
 import shutil
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 from .bash_tools import CommandResult, run_bash_command
 from .architect_agent import ArchitectAgent
@@ -57,7 +58,7 @@ class TopAgent:
             return testbench
         inst = m.group(1)
 
-        if re.search(rf"\\$dumpvars\\s*\\(\\s*0\\s*,\\s*{re.escape(inst)}\\s*\\)", testbench):
+        if re.search(rf"\$dumpvars\s*\(\s*0\s*,\s*{re.escape(inst)}\s*\)", testbench):
             return testbench
 
         lines = testbench.splitlines()
@@ -84,7 +85,7 @@ class TopAgent:
             # If the environment lacks Verilator, don't force golden TB fallback.
             return False
 
-        cmd = f"verilator --lint-only --sv --timing -Wall -Wno-fatal --assert {tb_path}"
+        cmd = f"verilator --lint-only --sv --timing -Wall -Wno-fatal --assert {shlex.quote(str(tb_path))}"
         _ok, out = run_bash_command(cmd, timeout=60, cwd=str(tb_path.parent))
         try:
             obj = CommandResult.model_validate_json(out)
@@ -122,7 +123,7 @@ class TopAgent:
         if shutil.which("verilator") is None:
             return True, "", ""
 
-        cmd = f"verilator --lint-only --sv --timing -Wall -Wno-fatal --assert {tb_path}"
+        cmd = f"verilator --lint-only --sv --timing -Wall -Wno-fatal --assert {shlex.quote(str(tb_path))}"
         _ok, out = run_bash_command(cmd, timeout=60, cwd=str(tb_path.parent))
         try:
             obj = CommandResult.model_validate_json(out)
@@ -214,6 +215,7 @@ class TopAgent:
         output_dir_per_run: Path,
         golden_tb_path: str | None,
         golden_rtl_blackbox_path: str | None,
+        usage_fns: List[Callable[[], Tuple[int, int]]],
     ) -> Tuple[bool, str, int, int]:
         architect = ArchitectAgent(self.cfg)
         tb_gen = TBGenerator(self.cfg)
@@ -230,17 +232,20 @@ class TopAgent:
         def usage_totals() -> Tuple[int, int]:
             total_in = 0
             total_out = 0
-            for model in tracked_models:
+            # Include the Debugger's BooleanProofer/Asserter helper agents (created lazily).
+            for model in tracked_models + rtl_edit.helper_models():
                 input_tokens, output_tokens = get_model_usage(model)
                 total_in += input_tokens
                 total_out += output_tokens
             return total_in, total_out
 
+        usage_fns.append(usage_totals)
+
         def finish(is_sim_pass: bool, rtl_code: str) -> Tuple[bool, str, int, int]:
             input_tokens, output_tokens = usage_totals()
             return is_sim_pass, rtl_code, input_tokens, output_tokens
 
-        architect.reset()
+        await architect.reset()
         contract_json = await self._build_contract_json(
             architect=architect,
             spec=spec,
@@ -266,7 +271,7 @@ class TopAgent:
         except Exception:  # noqa: BLE001
             pass
 
-        tb_gen.reset()
+        await tb_gen.reset()
         tb_gen.set_golden_tb_path(golden_tb_path)
         tb_input_spec = self._contract_only_context(contract_json) if self.config.contract_only else spec
         testbench, interface = await tb_gen.chat(tb_input_spec, contract_json=contract_json)
@@ -326,7 +331,7 @@ class TopAgent:
         except Exception:  # noqa: BLE001
             pass
 
-        rtl_gen.reset()
+        await rtl_gen.reset()
         rtl_path = str(output_dir_per_run / "rtl.sv")
         rtl_input_spec = self._contract_only_context(contract_json) if self.config.contract_only else spec
         is_syntax_pass, rtl_code = await rtl_gen.chat(
@@ -460,6 +465,9 @@ class TopAgent:
                         continue
                 except Exception:  # noqa: BLE001
                     pass
+                # Regen failed: rtl_gen.chat writes every attempt to rtl.sv, so restore the last
+                # syntax-correct RTL before the Debugger (which edits rtl.sv on disk) takes over.
+                self._write_output(output_dir_per_run=output_dir_per_run, file_name="rtl.sv", content=rtl_code)
 
             # Snapshot the failing state for inspection/debugging.
             self._write_output(
@@ -474,7 +482,7 @@ class TopAgent:
                 content=sim_log,
             )
 
-            rtl_edit.reset()
+            await rtl_edit.reset()
             is_sim_pass, rtl_code, used_trials = await rtl_edit.chat(
                 spec=(self._contract_only_context(contract_json) if self.config.contract_only else spec),
                 output_dir_per_run=str(output_dir_per_run),
@@ -496,9 +504,11 @@ class TopAgent:
         *,
         spec: str,
         output_dir_per_run: Path,
+        usage_fns: List[Callable[[], Tuple[int, int]]],
     ) -> Tuple[bool, str, int, int]:
-        rtl_gen = RTLGenerator(self.cfg)
-        rtl_gen.reset()
+        rtl_gen = RTLGenerator(self.cfg, ablation=True)
+        usage_fns.append(lambda: get_model_usage(rtl_gen._agent.model))
+        await rtl_gen.reset()
         rtl_path = str(output_dir_per_run / "rtl.sv")
         is_syntax_pass, rtl_code = await rtl_gen.ablation_chat(input_spec=spec, rtl_path=rtl_path)
         self._write_output(output_dir_per_run=output_dir_per_run, file_name="rtl.sv", content=rtl_code)
@@ -524,10 +534,18 @@ class TopAgent:
         if tag.exists():
             tag.unlink()
 
+        # Lets the error path still report tokens spent before the exception.
+        usage_fns: List[Callable[[], Tuple[int, int]]] = []
         try:
+            if re.search(r"\s", str(output_dir_per_run)):
+                # Verilator's generated Makefiles refuse such paths; fail clearly instead of
+                # surfacing it later as an RTL syntax/simulation failure.
+                raise ValueError(
+                    f"Output directory path contains whitespace, which Verilator cannot build in: {output_dir_per_run}"
+                )
             if self.config.is_ablation:
                 is_sim_pass, rtl_code, input_tokens, output_tokens = await self._run_instance_ablation(
-                    spec=spec, output_dir_per_run=output_dir_per_run
+                    spec=spec, output_dir_per_run=output_dir_per_run, usage_fns=usage_fns
                 )
             else:
                 is_sim_pass, rtl_code, input_tokens, output_tokens = await self._run_instance(
@@ -535,6 +553,7 @@ class TopAgent:
                     output_dir_per_run=output_dir_per_run,
                     golden_tb_path=golden_tb_path,
                     golden_rtl_blackbox_path=golden_rtl_blackbox_path,
+                    usage_fns=usage_fns,
                 )
             tag.write_text("1", encoding="utf-8")
             return TopAgentResult(
@@ -548,6 +567,14 @@ class TopAgent:
                 output_tokens=output_tokens,
             )
         except Exception as e:  # noqa: BLE001
+            input_tokens, output_tokens = 0, 0
+            for fn in usage_fns:
+                try:
+                    i, o = fn()
+                except Exception:  # noqa: BLE001
+                    continue
+                input_tokens += i
+                output_tokens += o
             return TopAgentResult(
                 output_dir_per_run=str(output_dir_per_run),
                 rtl_path=rtl_path,
@@ -555,7 +582,7 @@ class TopAgent:
                 if_path=if_path,
                 is_sim_pass=False,
                 rtl_code="",
-                input_tokens=0,
-                output_tokens=0,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 error=f"{type(e).__name__}: {e}",
             )

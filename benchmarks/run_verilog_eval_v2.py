@@ -72,6 +72,9 @@ def _read_problems(dataset_dir: Path, *, limit: int | None) -> list[str]:
             for line in problems_file.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.strip().startswith("#")
         ]
+        # Drop repeated entries (keeping order): duplicates would run twice into the same output
+        # directory, racing each other under --jobs > 1 and double-counting tokens.
+        problems = list(dict.fromkeys(problems))
     else:
         problems = sorted(
             {

@@ -270,13 +270,6 @@ Non-golden mode reminders:
 - For pattern detectors (if relevant), the common convention is to assert `detected` on the cycle AFTER the pattern completes, unless specified otherwise in the contract/spec.
 """
 
-COVERAGE_PROMPT = r""" Your task involves a Verilog Design Under Test (DUT) that is currently in its initial phase of testing.
-            The assignment requires you to generate a binary input sequence to maximize code coverage.
-            To achieve this, you need to analyze the DUT, considering the logic operations and transitions within the circuit.
-            This careful analysis will allow you to discern the relationship between the input sequence and the uncovered lines, and thus generate an effective input sequence.)";
-        // task_prompt += input_signal_prompt_;"""
-
-
 class TBGenerator:
     def __init__(
         self,
@@ -298,8 +291,8 @@ class TBGenerator:
         self.last_prompt: str = ""
         self.last_raw_output: str = ""
 
-    def reset(self):
-        clear_memory_safely(self._agent)
+    async def reset(self) -> None:
+        await clear_memory_safely(self._agent)
 
     def set_golden_tb_path(self, golden_tb_path: str | None) -> None:
         self.golden_tb_path = golden_tb_path
@@ -380,7 +373,7 @@ class TBGenerator:
         return ret
 
     async def chat(self, input_spec: str, *, contract_json: str) -> Tuple[str, str]:
-        self.reset()
+        await self.reset()
         init = self.get_init_prompt_messages(input_spec, contract_json=contract_json)[0].content
         order = self.get_order_prompt_messages()[0].content
         prompt = f"{init}\n\n{order}"

@@ -1,7 +1,9 @@
 agentscope==1.0.7
+# agentscope 1.0.7 imports mcp's `streamablehttp_client`, which mcp 2.x removed.
+mcp>=1,<2
 pydantic>=2,<3
 tqdm>=4,<5
 tree-sitter>=0.25,<0.26
 tree-sitter-verilog>=1,<2
-vcdvcd>=1,<2
+vcdvcd>=2,<3
 pytest==9.0.2

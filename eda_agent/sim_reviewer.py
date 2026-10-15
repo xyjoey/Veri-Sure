@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 from typing import Tuple
 
@@ -25,7 +26,7 @@ def _verilator_has_fatal(stdout: str, stderr: str) -> bool:
 
 def check_syntax(rtl_path: str) -> Tuple[bool, str]:
     _require_executable("verilator")
-    cmd = f"verilator --lint-only --sv --timing -Wall -Wno-fatal --assert {rtl_path}"
+    cmd = f"verilator --lint-only --sv --timing -Wall -Wno-fatal --assert {shlex.quote(rtl_path)}"
     is_pass, sim_output = run_bash_command(cmd, timeout=60)
     sim_output_obj = CommandResult.model_validate_json(sim_output)
     stdout = sim_output_obj.stdout or ""
@@ -69,11 +70,11 @@ def sim_review(
     # - Use --timing to support delays/event controls in testbenches.
     # - Use --trace so $dumpfile/$dumpvars can generate wave.vcd for debugging.
     # - Use --assert (or default-on in newer versions) for assertion support.
-    srcs = f"{tb_path} {rtl_path} {golden_rtl_path}".strip()
+    srcs = " ".join(shlex.quote(p) for p in (tb_path, rtl_path, golden_rtl_path) if p)
     cmd = (
         "verilator --binary -j 0 --sv --timing --trace --assert -Wall -Wno-fatal "
-        f"--Mdir obj_dir -o {sim_bin} {srcs}; "
-        f"{sim_bin}"
+        f"--Mdir obj_dir -o {shlex.quote(sim_bin)} {srcs}; "
+        f"{shlex.quote(sim_bin)}"
     )
     cmd_ok, sim_output = run_bash_command(cmd, timeout=120, cwd=output_path_per_run)
     sim_output_obj = CommandResult.model_validate_json(sim_output)

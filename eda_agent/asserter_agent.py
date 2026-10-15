@@ -133,8 +133,8 @@ class AsserterAgent:
         )
         self.max_trials = 3
 
-    def reset(self) -> None:
-        clear_memory_safely(self._agent)
+    async def reset(self) -> None:
+        await clear_memory_safely(self._agent)
 
     async def _call_agent(self, prompt: str) -> str:
         msg = await self._agent(Msg("user", prompt, role="user"))
@@ -156,7 +156,7 @@ class AsserterAgent:
         clocking_summary: str,
         target_outputs: list[str],
     ) -> AsserterSpec:
-        self.reset()
+        await self.reset()
         order = TAG_ORDER_PROMPT.format(output_format=EXAMPLE_OUTPUT_FORMAT)
         targets = "\n".join(f"- {s}" for s in target_outputs if isinstance(s, str) and s.strip())
         prompt = (

@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import re
+import shlex
 import shutil
 from typing import Any, Iterable, Literal, Sequence
 
@@ -513,8 +514,8 @@ class Asserter:
         sim_bin = str((proof_root / "sim_output.bin").resolve())
         cmd = (
             "verilator --binary -j 0 --sv --timing --trace --assert -Wall -Wno-fatal "
-            f"--Mdir obj_dir -o {sim_bin} tb.sv rtl.sv asserter.sv{golden_sv_arg} && "
-            f"{sim_bin}"
+            f"--Mdir obj_dir -o {shlex.quote(sim_bin)} tb.sv rtl.sv asserter.sv{golden_sv_arg} && "
+            f"{shlex.quote(sim_bin)}"
         )
         cmd_ok, out_json = await asyncio.to_thread(
             run_bash_command,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any
 
@@ -26,8 +27,15 @@ class SafeReActAgent(ReActAgent):
         return super().generate_response(response=response, **kwargs)
 
 
-def clear_memory_safely(agent: ReActAgent) -> None:
-    """Clear AgentScope memory without 'coroutine was never awaited' warnings."""
+async def clear_memory_safely(agent: ReActAgent) -> None:
+    """Clear AgentScope memory, awaiting the clear when it is async.
+
+    In AgentScope 1.0.7, InMemoryMemory.clear() is async and must be awaited
+    before the agent's next call. Scheduling it as a background task instead
+    lets it run during that call's model request: the call still sees the
+    previous history, and the new prompt is wiped from memory right after
+    being sent, so later retries in the same task lose their original prompt.
+    """
     mem = getattr(agent, "memory", None)
     if mem is None:
         return
@@ -39,12 +47,5 @@ def clear_memory_safely(agent: ReActAgent) -> None:
     except TypeError:
         # Some memory implementations may require args; ignore.
         return
-
-    # In AgentScope 1.0.7, InMemoryMemory.clear() is async; schedule it if needed.
-    if hasattr(ret, "__await__"):
-        try:
-            loop = __import__("asyncio").get_running_loop()
-            loop.create_task(ret)  # type: ignore[arg-type]
-        except RuntimeError:
-            # No running loop; run it to completion.
-            __import__("asyncio").run(ret)  # type: ignore[arg-type]
+    if inspect.isawaitable(ret):
+        await ret

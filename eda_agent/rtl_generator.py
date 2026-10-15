@@ -27,6 +27,17 @@ Contract-only mode:
 - <input_spec> and any testbench text are non-authoritative background and must NOT override the contract.
 """
 
+# Ablation mode (standalone generation + syntax check): there is no Architect contract,
+# so <input_spec> is the only source of truth.
+ABLATION_SYSTEM_PROMPT = r"""
+You are Coder, an expert in RTL design.
+
+You write clean, synthesizable, syntactically-correct SystemVerilog RTL that implements the given specification.
+
+Toolchain note:
+- The harness uses Verilator. Keep RTL compatible with Verilator (standard synthesizable SystemVerilog).
+"""
+
 PARSE_REPAIR_PROMPT = r"""
 Your previous response could not be parsed by the program.
 
@@ -65,6 +76,23 @@ The module interface must EXACTLY match the contract (module name, port names, w
 </input_spec>
 """
 
+ABLATION_GENERATION_PROMPT = r"""
+Write a complete SystemVerilog RTL module that implements the specification in <input_spec>.
+
+Hard rules:
+- Follow the specification. Do NOT invent behavior/timing that it does not state.
+- Match the exact module name and port list given in the specification.
+- Produce synthesizable RTL (no delays, no testbench constructs).
+- Keep the code small and readable.
+
+In `reasoning`, write a short summary of key decisions and assumptions (no step-by-step chain-of-thought).
+
+{examples_prompt}
+<input_spec>
+{input_spec}
+</input_spec>
+"""
+
 KMAP_HINT_PROMPT = r"""
 [K-map hint (only if the problem involves Karnaugh maps / K-maps)]:
 - Carefully interpret the K-map variable ordering from the spec/contract.
@@ -85,6 +113,19 @@ Other requirements:
 5. NEVER USE 'inside' operator in RTL code. Code like 'state inside {STATE_B, STATE_C, STATE_D}' should NOT be used.
 6. Never USE 'unique' or 'unique0' keywords in RTL code. Code like 'unique case' should NOT be used.
 7. Respect any explicit latency/timing described in the contract (e.g., next-cycle outputs).
+"""
+
+ABLATION_EXTRA_ORDER_PROMPT = r"""
+Other requirements:
+1. Don't use state_t to define the parameter. Use `localparam` or Use 'reg' or 'logic' for signals as registers or Flip-Flops.
+2. Declare all ports as logic. For internal nets/regs, prefer logic; `wire` is fine for continuous assigns.
+3. If the specification includes a reset, use it to ensure deterministic behavior as specified.
+   If it does NOT include a reset, you MAY use a minimal `initial` initialization to avoid X-propagation
+   in simulation (Verilator-focused). Do not rely on `initial` for core functionality.
+4. For combinational logic with an always block do not explicitly specify the sensitivity list; instead use always @(*).
+5. NEVER USE 'inside' operator in RTL code. Code like 'state inside {STATE_B, STATE_C, STATE_D}' should NOT be used.
+6. Never USE 'unique' or 'unique0' keywords in RTL code. Code like 'unique case' should NOT be used.
+7. Respect any explicit latency/timing described in the specification (e.g., next-cycle outputs).
 """
 # Some prompts above comes from:
 # @misc{ho2024verilogcoderautonomousverilogcoding,
@@ -136,13 +177,25 @@ class RTLOutputFormat(BaseModel):
     module: str
 
 
+def _needs_kmap_hints(*texts: str) -> bool:
+    text = "\n".join(texts).lower()
+    return any(k in text for k in ["kmap", "k-map", "karnaugh"])
+
+
 class RTLGenerator:
     def __init__(
         self,
         cfg: OpenAIConfig,
+        *,
+        ablation: bool = False,
     ):
         self._cfg = cfg
-        self._agent = self._new_agent(name="Coder")
+        # Ablation mode has no contract, so it needs a spec-only system prompt (see ablation_chat).
+        self.ablation = ablation
+        self._agent = self._new_agent(
+            name="Coder",
+            sys_prompt=ABLATION_SYSTEM_PROMPT if ablation else SYSTEM_PROMPT,
+        )
         self.generated_tb: str | None = None
         self.generated_if: str | None = None
         self.failed_trial: List[str] = []
@@ -150,13 +203,13 @@ class RTLGenerator:
         self.last_prompt: str = ""
         self.last_raw_output: str = ""
 
-    def reset(self):
-        clear_memory_safely(self._agent)
+    async def reset(self) -> None:
+        await clear_memory_safely(self._agent)
 
-    def _new_agent(self, *, name: str) -> SafeReActAgent:
+    def _new_agent(self, *, name: str, sys_prompt: str) -> SafeReActAgent:
         return SafeReActAgent(
             name=name,
-            sys_prompt=SYSTEM_PROMPT,
+            sys_prompt=sys_prompt,
             model=make_openai_model(self._cfg),
             formatter=make_formatter(self._cfg.model),
             memory=InMemoryMemory(),
@@ -181,10 +234,6 @@ class RTLGenerator:
         return text
 
     def get_init_prompt_messages(self, input_spec: str, *, contract_json: str) -> List[Msg]:
-        def needs_kmap_hints() -> bool:
-            text = f"{input_spec}\n{contract_json}".lower()
-            return any(k in text for k in ["kmap", "k-map", "karnaugh"])
-
         parts: list[str] = [
             GENERATION_PROMPT.format(
                 input_spec=input_spec,
@@ -192,7 +241,7 @@ class RTLGenerator:
                 contract_json=contract_json,
             )
         ]
-        if needs_kmap_hints():
+        if _needs_kmap_hints(input_spec, contract_json):
             parts.append(KMAP_HINT_PROMPT)
         if self.generated_tb:
             parts.append(TB_PROMPT.format(testbench=self.generated_tb))
@@ -243,44 +292,30 @@ class RTLGenerator:
         rtl_path: str,
         contract_json: str,
     ) -> Tuple[bool, str]:
-        self.reset()
+        await self.reset()
         self.generated_tb = testbench
         self.generated_if = interface
 
         init = self.get_init_prompt_messages(input_spec, contract_json=contract_json)[0].content
         order = self.get_order_prompt_messages()[0].content
-        prompt = f"{init}\n\n{order}"
-        syntax_correct = False
-        rtl_code = ""
-        for _ in range(self.max_trials):
-            response_text = await self._call_agent(self._agent, prompt)
-            resp_obj = self.parse_output(response_text)
-            if resp_obj.reasoning.startswith("Parse Error"):
-                repair = PARSE_REPAIR_PROMPT.format(
-                    parse_error=resp_obj.reasoning,
-                    bad_output=clip_text(response_text, max_chars=6000),
-                )
-                prompt = f"{repair}\n\n{order}"
-                continue
-            rtl_code = resp_obj.module
-            with open(rtl_path, "w") as f:
-                f.write(rtl_code)
-            syntax_correct, syntax_output = await asyncio.to_thread(
-                check_syntax, rtl_path
-            )
-            if syntax_correct:
-                break
-            fmt = self.get_format_error_prompt_messages(syntax_output, rtl_code)[0].content
-            prompt = f"{fmt}\n\n{order}"
-        return (syntax_correct, rtl_code)
+        return await self._generate_until_syntax_ok(init=init, order=order, rtl_path=rtl_path)
 
     async def ablation_chat(self, input_spec: str, rtl_path: str) -> Tuple[bool, str]:
-        self.reset()
+        """Standalone generation from the spec alone (no contract/testbench), with syntax retries."""
+        if not self.ablation:
+            raise ValueError("ablation_chat requires RTLGenerator(cfg, ablation=True).")
+        await self.reset()
         self.generated_tb = None
         self.generated_if = None
 
-        init = self.get_init_prompt_messages(input_spec, contract_json="")[0].content
-        order = self.get_order_prompt_messages()[0].content
+        parts = [ABLATION_GENERATION_PROMPT.format(input_spec=input_spec, examples_prompt=RTL_4_SHOT_EXAMPLES)]
+        if _needs_kmap_hints(input_spec):
+            parts.append(KMAP_HINT_PROMPT)
+        init = "\n\n".join(parts)
+        order = TAG_ORDER_PROMPT.format(output_format=EXAMPLE_OUTPUT_FORMAT) + ABLATION_EXTRA_ORDER_PROMPT
+        return await self._generate_until_syntax_ok(init=init, order=order, rtl_path=rtl_path)
+
+    async def _generate_until_syntax_ok(self, *, init: str, order: str, rtl_path: str) -> Tuple[bool, str]:
         prompt = f"{init}\n\n{order}"
         syntax_correct = False
         rtl_code = ""

@@ -30,6 +30,11 @@ def main(argv: list[str] | None = None) -> int:
         help="OpenAI extra_body JSON string (default: env OPENAI_EXTRA_BODY)",
     )
     m.add_argument("--runs-root", default="runs", help="Directory to store artifacts")
+    m.add_argument(
+        "--reasoning-effort",
+        default=None,
+        help="OpenAI reasoning_effort for reasoning models (default: provider default)",
+    )
     m.add_argument("--temperature", type=float, default=0.0)
     m.add_argument("--top-p", type=float, default=1.0)
     m.add_argument("--stream", action="store_true", help="Enable streaming model output")
@@ -58,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             api_key=args.api_key,
             base_url=args.base_url,
             extra_body=args.extra_body,
+            reasoning_effort=args.reasoning_effort,
             temperature=args.temperature,
             top_p=args.top_p,
             max_completion_tokens=args.max_completion_tokens,

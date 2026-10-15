@@ -114,8 +114,8 @@ class BooleanProoferAgent:
         )
         self.max_trials = 3
 
-    def reset(self) -> None:
-        clear_memory_safely(self._agent)
+    async def reset(self) -> None:
+        await clear_memory_safely(self._agent)
 
     async def _call_agent(self, prompt: str) -> str:
         msg = await self._agent(Msg("user", prompt, role="user"))
@@ -132,7 +132,7 @@ class BooleanProoferAgent:
             return BooleanProoferSpec(reasoning=f"Parse Error: {type(e).__name__}: {e}", spec_body="")
 
     async def chat(self, *, contract_json: str, module_header: str, target_outputs: list[str]) -> BooleanProoferSpec:
-        self.reset()
+        await self.reset()
         order = TAG_ORDER_PROMPT.format(output_format=EXAMPLE_OUTPUT_FORMAT)
         targets = "\n".join(f"- {s}" for s in target_outputs if isinstance(s, str) and s.strip())
         prompt = f"{GENERATION_PROMPT.format(contract_json=contract_json, module_header=module_header, target_outputs=targets)}\n\n{order}"
